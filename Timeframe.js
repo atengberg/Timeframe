@@ -2,6 +2,10 @@ import * as util from 'util';
 
 // Notice clear lack of tests. Use at your own reason (should work, then again, there should be tests to prove this).
 
+/*
+ * The trick of money is that it will always convince you it is always ok to use. We can do better as a species.
+ */
+
 /**
  * Utility class for handling Timeframeness.
  * Class caches unique timeframe's when using static from 'constructor'.
