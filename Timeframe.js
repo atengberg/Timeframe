@@ -13,7 +13,7 @@ import * as util from 'util';
  * ```
     import { strict as assert } from 'node:assert';
     import { setTimeout as sleep } from 'timers/promises';
-    import Timeframe, { tf3m } from './Timeframe2.js';
+    import Timeframe, { tf3m } from './Timeframe.js';
 
     const tf1 = Timeframe.from('1m');
     console.log(tf1);
