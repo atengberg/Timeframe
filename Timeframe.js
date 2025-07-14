@@ -6,107 +6,34 @@ import * as util from 'util';
  * The trick of money is that it will always convince you it is always ok to use. We can do better as a species.
  */
 
-/**
- * Utility class for handling Timeframeness.
- * Class caches unique timeframe's when using static from 'constructor'.
- * Demo:
- * ```
-    import { strict as assert } from 'node:assert';
-    import { setTimeout as sleep } from 'timers/promises';
-    import Timeframe, { tf3m } from './Timeframe.js';
+export const datepochToLegibleArr = function (d, includeISO = false) {
+  if (!(d instanceof Date)) d = new Date(d);
+  const arr = [d.getTime(), d.toLocaleString()];
+  if (includeISO) {
+    const [isoDate, isoTime] = d.toISOString().split('T');
+    return [...arr, '|iso:', isoDate, isoTime];
+  } else {
+    return arr;
+  }
+};
 
-    const tf1 = Timeframe.from('1m');
-    console.log(tf1);
+const LOOKUP_TF_TO_SECONDS = {
+  s: 1,
+  m: 60,
+  h: 3600,
+  d: 86400,
+  w: 604800,
+  M: 2592000,
+  Y: 31536000,
+};
+const LOOKUP_TF_TO_MILLISECONDS = Object.fromEntries(Object.entries(LOOKUP_TF_TO_SECONDS).map(([char, seconds]) => [char, seconds * 1000]));
 
-    assert.equal(tf3m.asMilliseconds, 180000);
-    const tf1m = Timeframe.from('1m');
-    const d = new Date();
-    assert.equal(tf1m.computeElapsedCount(d.getTime() - 120000), 2);
-    assert.equal(tf1m.computeElapsedCount(d.getTime() - 120000, d.getTime()), 2);
-    await sleep(6100);
-    d.setTime(Date.now());
-    d.setMilliseconds(0);
-    d.setSeconds(0);
-    assert.equal(d.getTime(), tf1m.computeCongruentStartKey());
-    assert.equal(d.getTime(), tf1m.computeCongruentStartKey(Date.now()));
- * ```
- */
-class Timeframe {
-  static #memoizCache = Object.create(null);
-  #asLiteral;
-  #asMilliseconds;
-  /** Use `Timeframe.from()` instead for singleton instances/from memeocache. */
-  constructor(tf) {
-    if (tf instanceof Timeframe) {
-      return tf;
-    } else {
-      if (typeof tf === 'string') {
-        this.#asLiteral = tf;
-        this.#asMilliseconds = millisecondsFromTimeframe(tf);
-        this.computeElapsedCount = computeElapsedCount.bind(null, this.asMilliseconds);
-        this.computeCongruentStartKey = computeCongruentStartKey.bind(
-          null,
-          this.asMilliseconds,
-        );
-      } else {
-        throw new TypeError(
-          'Creating timeframe from anything other than literal or instance is not supported yet!',
-        );
-      }
-    }
-  }
-  [util.inspect.custom](depth, options) {
-    return `Timeframe! ${this} has interval duration of ${+this} ms.`;
-  }
-  toJSON() {
-    return JSON.stringify({ [this.asLiteral]: this.asMilliseconds });
-  }
-  get millisecondsLeftUntilNext() {
-    return getTimeLeftUntilNextStart(this.#asMilliseconds);
-  }
-  /** '1m' */
-  get asLiteral() {
-    return this.#asLiteral;
-  }
-  /** 60000 */
-  get asMilliseconds() {
-    return this.#asMilliseconds;
-  }
-  static from(timeframe) {
-    if (typeof timeframe === 'string') {
-      if (!Timeframe.#memoizCache[timeframe]) {
-        timeframe = new Timeframe(timeframe);
-        Timeframe.#memoizCache[timeframe.asLiteral] = timeframe;
-      } else {
-        timeframe = Timeframe.#memoizCache[timeframe];
-      }
-    } else if (timeframe instanceof Timeframe) {
-      if (!Timeframe.#memoizCache[timeframe.asLiteral]) {
-        Timeframe.#memoizCache[timeframe.asLiteral] = timeframe;
-      }
-    } else {
-      // Does not handle interval duration as constructor from argument yet.
-      throw new TypeError(
-        'Timeframe period duration not yet implemented as clonable source resource.',
-      );
-    }
-    return timeframe;
-  }
-  static deallocCache() {
-    for (const tf of Object.keys(Timeframe.#memoizCache))
-      Timeframe.#memoizCache[tf] = null;
-    Timeframe.#memoizCache = Object.create(null);
-  }
-  /** Converts a timeframe to text or number depending on context. TODO not yet satisified with results. */
-  [Symbol.toPrimitive](hint) {
-    if (hint === 'string') {
-      return this.asLiteral;
-    } else if (hint === 'number') {
-      return this.asMilliseconds;
-    } else {
-      return `${this.asMilliseconds}milliseconds`;
-    }
-  }
+function millisecondsFromTimeframe(timeframe) {
+  // Note duplicates of upper and lowercase days, weeks and years but not months (since lower case is always minutes):
+  const match = timeframe.match(/^(\d+)([smhdwMY])$/);
+  if (!match) throw new Error(`Invalid timeframe format: ${timeframe || 'timeframe DNE'}`);
+  const [, quantity, unit] = match;
+  return parseInt(quantity, 10) * LOOKUP_TF_TO_MILLISECONDS[unit];
 }
 
 function computeCongruentStartKey(interval, epoch = Date.now()) {
@@ -117,44 +44,161 @@ function computeElapsedCount(interval, startTimestamp, endTimestamp = Date.now()
   return ~~((endTimestamp - startTimestamp) / interval);
 }
 
-function getTimeLeftUntilNextStart(interval) {
+function computeMSLeftUntilNextStart(interval) {
   const now = Date.now();
   const startKey = ~~(now / interval) * interval;
   const next = startKey + interval;
   return next - now;
 }
 
-const LOOKUP_TF_TO_MILLISECONDS = Object.fromEntries(
-  Object.entries({
-    s: 1,
-    m: 60,
-    h: 3600,
-    d: 86400,
-    D: 86400,
-    w: 604800,
-    W: 604800,
-    M: 2592000,
-    y: 31536000,
-    Y: 31536000,
-  }).map(([timeUnitInitial, secondsPer]) => [timeUnitInitial, secondsPer * 1000]),
-);
+class Timeframe {
+  static #memoizCache = Object.create(null);
+  static #FALLBACK_FORMAT = 'ms';
 
-// 'Inspired' by https://github.com/BlackPhoenixSlo/TradingBot_NodeJS_Public/blob/main/utils/main-bot--time.js
-function millisecondsFromTimeframe(timeframe) {
-  // Note duplicates of upper and lowercase days, weeks and years but not months (since lower case is always minutes):
-  const match = timeframe.trim().match(/^(\d+)([smhdDwWMyY])$/);
-  if (!match)
-    throw new Error('Timeframe format not viable!', {
-      details: `Input⟦ ${timeframe || '∅'} ⟧ cannot be used to create valid Date object.`,
+  #asLiteral;
+  #asMilliseconds;
+
+  constructor(source) {
+    if (source instanceof Timeframe) return source;
+    if (typeof source === 'string') {
+      this.#asLiteral = source;
+      this.#asMilliseconds = millisecondsFromTimeframe(source);
+    } else if (source?.__isTimeframeSerialized) {
+      this.#asLiteral = source.asLiteral;
+      this.#asMilliseconds = source.asMilliseconds;
+    } else {
+      throw new Error(`Invalid timeframe source: ${source}`);
+    }
+    this.computeElapsedCount = computeElapsedCount.bind(null, this.#asMilliseconds);
+    this.computeCongruentStartKey = computeCongruentStartKey.bind(null, this.#asMilliseconds);
+  }
+
+  toJSON(asClone = true) {
+    return asClone
+      ? {
+          __isTimeframeSerialized: true,
+          asLiteral: this.#asLiteral,
+          asMilliseconds: this.#asMilliseconds,
+        }
+      : { [this.#asLiteral]: this.#asMilliseconds };
+  }
+
+  [util.inspect.custom]() {
+    return `Timeframe(${this.#asLiteral} = ${this.#asMilliseconds}ms)`;
+  }
+
+  // --- Static Constructors ---
+  static from(source, options = {}) {
+    if (source instanceof Timeframe) return this.#cacheInstance(source);
+    const cacheKey = this.#getCacheKey(source, options);
+    if (cacheKey && !this.#memoizCache[cacheKey]) {
+      this.#memoizCache[cacheKey] = this.#createInstance(source, options);
+    }
+    return cacheKey ? this.#memoizCache[cacheKey] : this.#createInstance(source, options);
+  }
+
+  static fromMilliseconds(ms, options = {}) {
+    if (typeof ms !== 'number' || ms < 0) {
+      throw new Error(`Reading invalid milliseconds: ${ms} when using Timeframe.fromMs static creator.`);
+    }
+    // 1. Try exact match
+    const exact = this.#findExactMatch(ms);
+    if (exact) return exact;
+    // 2. Try approximate match (if enabled)
+    if (options.approximate) {
+      const approx = this.#findApproximateMatch(ms, options.tolerance || 0.1);
+      if (approx) return approx;
+    }
+    // 3. Fallback
+    return this.#createFallback(ms, options.format || this.#FALLBACK_FORMAT);
+  }
+
+  static #getCacheKey(source, options) {
+    if (typeof source === 'string') return source;
+    if (source?.__isTimeframeSerialized) return source.asLiteral;
+    if (typeof source === 'number') {
+      const tf = this.#createInstance(source, options);
+      return tf.asLiteral;
+    }
+  }
+
+  static #createInstance(source, options) {
+    if (typeof source === 'string') return new Timeframe(source);
+    if (source?.__isTimeframeSerialized) return new Timeframe(source);
+    if (typeof source === 'number') return this.fromMilliseconds(source, options);
+    throw new Error(`Cannot create from ${typeof source}`);
+  }
+
+  static #cacheInstance(tf) {
+    const key = tf.asLiteral;
+    return this.#memoizCache[key] || (this.#memoizCache[key] = tf);
+  }
+
+  static #findExactMatch(ms) {
+    for (const [unit, unitMs] of Object.entries(LOOKUP_TF_TO_MILLISECONDS)) {
+      if (ms % unitMs === 0) {
+        return Timeframe.from(`${ms / unitMs}${unit}`);
+      }
+    }
+    return null;
+  }
+
+  static #findApproximateMatch(ms, tolerance) {
+    for (const [unit, unitMs] of Object.entries(LOOKUP_TF_TO_MILLISECONDS)) {
+      const ratio = ms / unitMs;
+      if (Math.abs(ratio - Math.round(ratio)) <= tolerance) {
+        return Timeframe.from(`${Math.round(ratio)}${unit}`);
+      }
+    }
+    return null;
+  }
+
+  static #createFallback(ms, format) {
+    const literal = format === 'seconds' ? `${ms / 1000}s` : `${ms}ms`;
+    return new Timeframe({
+      __isTimeframeSerialized: true,
+      asLiteral: literal,
+      asMilliseconds: ms,
     });
-  const [, quantity, unit] = match;
-  return parseInt(quantity, 10) * LOOKUP_TF_TO_MILLISECONDS[unit];
+  }
+
+  // --- Getters ---
+  get asLiteral() {
+    return this.#asLiteral;
+  }
+  get asMilliseconds() {
+    return this.#asMilliseconds;
+  }
+  get millisecondsLeftUntilNextStart() {
+    return computeMSLeftUntilNextStart(this.#asMilliseconds);
+  }
+
+  // --- Primitive Conversion ---
+  [Symbol.toPrimitive](hint) {
+    return hint === 'string' ? this.#asLiteral : this.#asMilliseconds;
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// prettier-ignore
-['1m','3m','5m','15m','30m','45m','1h','2h','3h','4h','8h','12h','16h','20h','24h','2d','2D',].forEach((tfLiteral) => Timeframe.from(tfLiteral));
+export const standardTimeframes = [
+  '1m',
+  '3m',
+  '5m',
+  '15m',
+  '30m',
+  '45m',
+  '1h',
+  '2h',
+  '3h',
+  '4h',
+  '8h',
+  '12h',
+  '16h',
+  '20h',
+  '1d',
+  '2d',
+].map((tfLiteral) => Timeframe.from(tfLiteral));
 
 const tf1m = Timeframe.from('1m');
 const tf2m = Timeframe.from('2m');
@@ -162,55 +206,123 @@ const tf3m = Timeframe.from('3m');
 const tf5m = Timeframe.from('5m');
 const tf15m = Timeframe.from('15m');
 const tf1h = Timeframe.from('1h');
-const tf1D = Timeframe.from('1D');
+const tf1d = Timeframe.from('1d');
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/**
- * Batches given range into as many contigious subsets as needed determined by given `batchSize`.
- * Useful if needing to warmup a paginating fetcher due API rate limits, etc.
- * @param {number} timeframeDurationMs - number of milliseconds the timeframe's period duration
- * @param {number} startTime - epoch unix timestamp < endTime
- * @param {number} endTime - epoch unix timestamp > startTime
- * @param {number} batchSize - number of elements to be in each subset, possibly excluding the last which could be fewer than this value
- * @returns
- */
-function batchSequenceTimestampInterims(
-  timeframeDurationMs,
-  startTime,
-  endTime,
-  batchSize = 1441,
-) {
-  const totalIntervals = ~~((endTime - startTime) / timeframeDurationMs);
+function computeTimestampBatches(interval, startTime, endTime, maxLimit = 1441) {
+  const totalIntervals = ~~((endTime - startTime) / interval);
   const batches = [];
-  // Seems like a job for Array.from({ length }).map...
-  for (
-    let i = 0, numBatches = Math.ceil(totalIntervals / batchSize);
-    i < numBatches;
-    i++
-  ) {
-    const batchStartTime = startTime + i * batchSize * timeframeDurationMs;
+  for (let i = 0, numBatches = Math.ceil(totalIntervals / maxLimit); i < numBatches; i++) {
+    const batchStartTime = startTime + i * maxLimit * interval;
     batches.push({
       startTime: batchStartTime,
-      endTime:
-        i === numBatches - 1
-          ? endTime
-          : batchStartTime + batchSize * timeframeDurationMs - timeframeDurationMs,
+      endTime: i === numBatches - 1 ? endTime : batchStartTime + maxLimit * interval - interval,
     });
   }
   return batches;
 }
 
+function cloneAndDropLastEndTime(timestampBatches) {
+  timestampBatches = [...timestampBatches];
+  const length = timestampBatches.length;
+  if (length > 0) {
+    timestampBatches[length - 1].endTime = undefined;
+  }
+  return timestampBatches;
+}
+
+/**
+ * Remember elapsed count will be one less than result data length.
+ * Demo:
+  ```js
+  async function main() {
+  const tf = Timeframe.from('1m');
+  const dToLegibleArr = (d) => {
+    if (!(d instanceof Date)) d = new Date(d);
+    return [d.getTime(), d.toLocaleString()];
+  };
+  const d = new Date();
+  d.setUTCMilliseconds(0);
+  d.setUTCSeconds(0);
+  d.setUTCMinutes(0);
+  d.setUTCHours(d.getUTCHours() - 3 * 24);
+  const mNow = tf.computeCongruentStartKey();
+  const m3DaysAgo = d.getTime();
+  const batches = tf.computeTimestampBatches(
+    m3DaysAgo,
+    mNow,
+    1440,
+  );
+  logStartEndTimes(batches);
+  //>
+  // #0 | startTime:  1719036000000 6/22/2024, 2:00:00 AM  - endTime:  1719122340000 6/23/2024, 1:59:00 AM && elapsedCount: 1439  
+  // #1 | startTime:  1719122400000 6/23/2024, 2:00:00 AM  - endTime:  1719208740000 6/24/2024, 1:59:00 AM && elapsedCount: 1439
+  // #2 | startTime:  1719208800000 6/24/2024, 2:00:00 AM  - endTime:  1719295140000 6/25/2024, 1:59:00 && elapsedCount: AM 1439
+  // #3 | startTime:  1719295200000 6/25/2024, 2:00:00 AM  - endTime:  1719295800000 6/25/2024, 2:10:00 && elapsedCount: AM 10
+  ```
+ */
+function logStartEndTimes(startEndTimesArr, timeframe = Timeframe.from('1m')) {
+  startEndTimesArr
+    .map(({ startTime, endTime }, i) => [
+      `#${i} | startTime: `,
+      ...datepochToLegibleArr(startTime),
+      ' - endTime: ',
+      ...datepochToLegibleArr(endTime),
+      '&& elapsedCount: ',
+      timeframe.computeElapsedCount(endTime, startTime),
+    ])
+    .forEach(([prefix, ...rest]) => console.log(prefix, ...rest));
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-function getEarlierUTCMidnightDate(ofEpochDay = new Date()) {
-  const now = ofEpochDay instanceof Date ? ofEpochDay : new Date(ofEpochDay);
-  if (isNaN(now.getTime())) throw new TypeError('G');
+export function getCongruentMinuteEpochTimeAgo(
+  { days = 0, hours = 0, minutes = 0 } = {},
+  { minutes: alignMinutes = false, hours: alignHours = false, days: alignDays = false, months: alignMonths = false } = {},
+) {
+  // Calculate the target time
+  const now = Date.now();
+  const msAgo = days * 24 * 60 * 60 * 1000 + hours * 60 * 60 * 1000 + minutes * 60 * 1000;
+  let date = new Date(now - msAgo);
+
+  // Reset milliseconds and seconds to 0 (congruent to minutes)
+  date.setUTCMilliseconds(0);
+  date.setUTCSeconds(0);
+
+  // Apply alignment
+  if (alignMinutes) date.setUTCMinutes(0);
+  if (alignHours) date.setUTCHours(0);
+  if (alignDays) date.setUTCDate(1);
+  if (alignMonths) {
+    date.setUTCMonth(date.getUTCMonth(), 1);
+    date.setUTCHours(0, 0, 0, 0);
+  }
+
+  return date.getTime();
+}
+
+export function getPrecedingDaysMidnightEpochKey(howManyDaysBack = 7) {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - howManyDaysBack);
+  d.setUTCMilliseconds(0);
+  d.setUTCSeconds(0);
+  d.setUTCMinutes(0);
+  d.setUTCHours(0);
+  return d.getTime();
+}
+
+function getEarlierUTCMidnightDate() {
+  const now = new Date();
   now.setUTCMilliseconds(0);
   now.setUTCSeconds(0);
   now.setUTCMinutes(0);
   now.setUTCHours(0);
   return now;
+}
+
+function getEarlierUTCMidnightDateAsMinuteKey() {
+  return getEarlierUTCMidnightDate().getTime();
 }
 
 function getPrecedingDaysofMonth() {
@@ -222,17 +334,51 @@ function getPrecedingDaysofMonth() {
     .map((_, i) => {
       i += 1;
       now.setDate(i);
+      const _date = new Date(now);
       return {
         year,
         month,
         day: i,
         epoch: now.getTime(),
+        _date,
       };
     });
 }
 
+/** Remember month returned is normalized as index starting at 1 (instead of 0). */
+function getPrecedingDaysMinuteEpochKeys() {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+
+  const result = [];
+  for (let day = now.getUTCDate() - 1; day > 0; day--) {
+    const startOfDay = Date.UTC(year, month, day, 0, 0, 0, 0);
+    const endOfDay = Date.UTC(year, month, day, 23, 59, 0, 0);
+    const firstEpochKey = computeCongruentStartKey(60000, startOfDay);
+    const lastEpochKey = computeCongruentStartKey(60000, endOfDay);
+    const nextCheck = new Date(lastEpochKey + 60 * 1000);
+
+    result.push({
+      startDate: new Date(firstEpochKey),
+      endDate: new Date(lastEpochKey),
+      year,
+      month: month + 1,
+      day,
+      epochKeys: [firstEpochKey, lastEpochKey],
+      next: {
+        epoch: nextCheck.getTime(),
+        date: nextCheck,
+      },
+    });
+  }
+
+  return result.reverse();
+}
+
 export default Timeframe;
 export {
+  Timeframe,
   computeCongruentStartKey,
   computeElapsedCount,
   tf1m,
@@ -241,33 +387,11 @@ export {
   tf5m,
   tf15m,
   tf1h,
-  tf1D,
-  batchSequenceTimestampInterims,
+  tf1d,
+  computeTimestampBatches,
   getEarlierUTCMidnightDate,
+  getEarlierUTCMidnightDateAsMinuteKey,
   getPrecedingDaysofMonth,
-};
-
-/**
- * Helper function for (debug) displaying epoch, local and iso forms of a given datepochish value.
- * Demo:
- * ```js
- *   console.log(...datepochToLegibleArr(undefined, true)); //> 1724553312842 8/24/2024 @ 10:35:12 PM ≍ 2024-08-25 @ 02:35:12.842Z
- *   // or
- *   newData.forEach(({ timestamp, value }, i) => console.log('i@', i, '🗠:', value, '🕰:', ...datepochToLegibleArr(timestamp)));
- * ```
- * @param {?number|Date|string} datepochish - any value that can be used to instance a `Date`, defaults to current `new Date()`
- * @throws {TypeError} if given `datepochish` results in a created Date whose `getTime` is `NaN`
- * @param {boolean} includeISO - whether the equivalent ISO string is also appended
- * @returns {[number, string, string|undefined]} an array of the unix epoch timestamp, locale string and, (if opted for), iso string with its T swapped for @
- */
-export const datepochToLegibleArr = function (
-  datepochish = new Date(),
-  includeISO = false,
-) {
-  const date = datepochish instanceof Date ? datepochish : new Date(datepochish);
-  if (isNaN(date.getTime())) {
-    throw new TypeError(`Input⟦ ${datepochish} ⟧is not valid type to date!`);
-  }
-  const arr = [date.getTime(), date?.toLocaleString().replace(', ', ' @ ')];
-  return includeISO ? [...arr, '≍', date?.toISOString().replace('T', ' @ ')] : arr;
+  logStartEndTimes,
+  getPrecedingDaysMinuteEpochKeys,
 };
